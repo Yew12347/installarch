@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Arch Linux Install Script Generator</title>
 <style>
-  body { font-family: monospace; margin: 20px; max-width: 900px; }
-  label { display: block; margin-top: 10px; font-weight: bold; }
-  select, input[type=text], input[type=password] { width: 100%; font-family: monospace; font-size: 1em; padding: 5px; }
-  textarea { width: 100%; height: 350px; margin-top: 20px; font-family: monospace; font-size: 0.9em; }
+  body { font-family: monospace; max-width: 900px; margin: 20px auto; }
+  label { font-weight: bold; margin-top: 10px; display: block; }
+  input, select { width: 100%; font-family: monospace; font-size: 1em; padding: 5px; margin-top: 4px; }
+  textarea { width: 100%; height: 400px; margin-top: 20px; font-family: monospace; font-size: 0.9em; white-space: pre-wrap; }
   button { margin-top: 15px; padding: 10px 20px; font-size: 1em; }
 </style>
 </head>
@@ -16,11 +16,11 @@
 
 <h1>Arch Linux Install Script Generator</h1>
 
-<form id="installForm" onsubmit="generateScript(event)">
+<form id="form" onsubmit="generate(event)">
   <label>Root Partition (e.g. /dev/sda2):</label>
   <input type="text" id="rootPart" required placeholder="/dev/sda2" />
 
-  <label>Is this a UEFI system?</label>
+  <label>UEFI System?</label>
   <select id="uefi" required>
     <option value="true">Yes</option>
     <option value="false">No</option>
@@ -55,10 +55,10 @@
   <label>Username:</label>
   <input type="text" id="username" required placeholder="user" />
 
-  <label>Set passwords interactively inside chroot? (if unchecked, default password 'changeme' will be used)</label>
+  <label>Set passwords interactively inside chroot? (if no, default password 'changeme')</label>
   <select id="interactivePass" required>
-    <option value="true">Yes, ask for passwords</option>
-    <option value="false">No, use default password 'changeme'</option>
+    <option value="true">Yes, prompt for passwords</option>
+    <option value="false">No, set default 'changeme'</option>
   </select>
 
   <label>Install GRUB bootloader?</label>
@@ -67,15 +67,15 @@
     <option value="false">No</option>
   </select>
 
-  <button type="submit">Generate Install Script</button>
+  <button type="submit">Generate Script</button>
 </form>
 
-<h2>Generated Script:</h2>
-<textarea id="outputScript" readonly></textarea>
+<h2>Generated Install Script:</h2>
+<textarea id="output" readonly></textarea>
 
 <script>
-function generateScript(event) {
-  event.preventDefault();
+function generate(e) {
+  e.preventDefault();
 
   const rootPart = document.getElementById('rootPart').value.trim();
   const uefi = document.getElementById('uefi').value === 'true';
@@ -90,29 +90,29 @@ function generateScript(event) {
   const interactivePass = document.getElementById('interactivePass').value === 'true';
   const installGrub = document.getElementById('installGrub').value === 'true';
 
-  if (uefi && efiPart === '') {
-    alert('EFI partition must be specified for UEFI systems.');
+  if (uefi && !efiPart) {
+    alert('EFI partition must be set for UEFI systems');
     return;
   }
 
-  // Compose GPU driver packages
+  // GPU packages
   let gpuPkgs = '';
   if (gpuDriver === 'intel') gpuPkgs = 'mesa intel-media-driver';
   else if (gpuDriver === 'amd') gpuPkgs = 'mesa libva-mesa-driver';
   else if (gpuDriver === 'nvidia') gpuPkgs = 'nvidia nvidia-utils nvidia-lts';
 
-  // Desktop environment packages and service enable
+  // Desktop packages and enable commands
   let dePkgs = '';
   let deEnable = '';
   if (desktopEnv === 'gnome') {
     dePkgs = 'gnome gnome-tweaks gnome-extra';
-    deEnable = 'systemctl enable gdm';
+    deEnable = 'systemctl enable gdm.service';
   } else if (desktopEnv === 'kde') {
     dePkgs = 'plasma plasma-wayland-session sddm';
-    deEnable = 'systemctl enable sddm';
+    deEnable = 'systemctl enable sddm.service';
   }
 
-  // Password commands
+  // Password commands inside chroot
   let passwdCmds = '';
   if (interactivePass) {
     passwdCmds = `
@@ -130,7 +130,7 @@ echo "${username}:changeme" | chpasswd
     `;
   }
 
-  // EFI mount script
+  // EFI mount script snippet
   let efiMount = '';
   if (uefi) {
     efiMount = `
@@ -139,13 +139,13 @@ mount ${efiPart} /mnt/boot
     `;
   }
 
-  // EFI format script
+  // EFI format snippet
   let efiFormat = '';
   if (uefi && formatEFI) {
     efiFormat = `mkfs.fat -F32 ${efiPart}`;
   }
 
-  // GRUB install script
+  // GRUB install script inside chroot
   let grubScript = '';
   if (installGrub) {
     grubScript = `
@@ -159,7 +159,7 @@ grub-mkconfig -o /boot/grub/grub.cfg
     `;
   }
 
-  // Compose full script
+  // Build full script output
   const script = `#!/bin/bash
 set -euo pipefail
 
@@ -177,13 +177,13 @@ echo "Mounting root partition ${rootPart} to /mnt"
 mount ${rootPart} /mnt
 ${efiMount}
 
-echo "Installing base system and packages"
+echo "Installing base system and essential packages"
 pacstrap /mnt base base-devel linux linux-headers linux-lts linux-lts-headers linux-firmware sudo networkmanager nano os-prober mtools dosfstools efibootmgr sudo openssh
 
 echo "Generating fstab"
 genfstab -U /mnt >> /mnt/etc/fstab
 
-# Prepare chroot setup script
+echo "Creating chroot setup script..."
 cat > /mnt/root/setup.sh <<'EOF'
 #!/bin/bash
 set -euo pipefail
@@ -198,7 +198,7 @@ echo "Enabling wheel group sudo privileges"
 sed -i '/^# %wheel ALL=(ALL) ALL/s/^# //' /etc/sudoers
 
 echo "Setting locale"
-sed -i 's/^#${locale}/${locale}/' /etc/locale.gen
+sed -i 's/^#${locale}/${locale}/' /etc/locale.gen || echo "Locale ${locale} not found in locale.gen"
 locale-gen
 echo "LANG=${locale}" > /etc/locale.conf
 
@@ -214,42 +214,44 @@ cat >> /etc/hosts <<HOSTS
 127.0.1.1 ${hostname}.localdomain ${hostname}
 HOSTS
 
-echo "Installing additional packages"
+echo "Installing desktop environment and GPU drivers"
 pacman -S --noconfirm base-devel dosfstools grub efibootmgr ${dePkgs} gnome-tweaks nano networkmanager os-prober ${gpuPkgs}
 
-${deEnable ? deEnable : 'echo "No desktop environment to enable"'}
+${deEnable ? deEnable : 'echo "No desktop environment selected to enable"'}
 
 echo "Regenerating initramfs"
 mkinitcpio -p linux
 mkinitcpio -p linux-lts
 
-echo "Enable NetworkManager"
+echo "Enabling NetworkManager service"
 systemctl enable NetworkManager
 
 echo "Installing bootloader"
 ${grubScript}
 
-echo "Setup complete."
+echo "Chroot setup complete."
 EOF
 
-echo "Entering chroot to finish installation"
+chmod +x /mnt/root/setup.sh
+
+echo "Running setup script inside chroot..."
 arch-chroot /mnt /root/setup.sh
 
-echo "Cleaning up"
+echo "Cleaning up setup script..."
 rm /mnt/root/setup.sh
 
-echo "Unmounting partitions"
+echo "Unmounting partitions..."
 umount -R /mnt
 
-read -rp "Installation complete. Reboot now? (y/n): " reboot_now
-if [[ \$reboot_now =~ ^[Yy] ]]; then
+read -rp "Installation complete. Reboot now? (y/n): " yn
+if [[ \$yn =~ ^[Yy]$ ]]; then
   reboot
 else
   echo "Please reboot manually later."
 fi
 `;
 
-  document.getElementById('outputScript').textContent = script;
+  document.getElementById('output').value = script;
 }
 </script>
 
