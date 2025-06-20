@@ -11,4 +11,4 @@ chmod +x "$FILENAME"
 
 # Run it
 echo "Running installarch..."
-./"$FILENAME"
+./installarch
