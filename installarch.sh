@@ -1,188 +1,169 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "Welcome to Custom Arch Installer!"
+echo "=== Arch Linux Automated Installer ==="
 
-# Helper function for yes/no prompt
-yesno() {
-  while true; do
-    read -rp "$1 (y/n): " yn
-    case $yn in
-      [Yy]*) return 0 ;;
-      [Nn]*) return 1 ;;
-      *) echo "Please answer y or n." ;;
-    esac
-  done
+# Helper function for yes/no
+confirm() {
+    while true; do
+        read -rp "$1 (y/n): " yn
+        case $yn in
+            [Yy]*) return 0 ;;
+            [Nn]*) return 1 ;;
+        esac
+    done
 }
 
-# 1. Select target drive (show disks)
-echo "Available block devices:"
-lsblk -d -o NAME,SIZE,MODEL | grep -v loop
+# Select target root partition (assumes partition exists)
+echo "Available disks:"
+lsblk -dpno NAME,SIZE,TYPE | grep disk
+read -rp "Enter root partition device (e.g. /dev/sda2): " ROOT_PART
 
-while true; do
-  read -rp "Enter your target drive (e.g. sda): /dev/" DRIVE
-  if [[ -b "/dev/$DRIVE" ]]; then
-    echo "Selected drive: /dev/$DRIVE"
-    break
-  else
-    echo "Invalid drive, please try again."
-  fi
-done
-
-# 2. Ask if partition already exists or create partition
-if yesno "Do you want to format and use an existing partition?"; then
-  lsblk "/dev/$DRIVE"
-  while true; do
-    read -rp "Enter partition to install on (e.g. sda3): /dev/" PARTITION
-    if [[ -b "/dev/$PARTITION" ]]; then
-      echo "Selected partition: /dev/$PARTITION"
-      break
-    else
-      echo "Invalid partition, try again."
-    fi
-  done
-  echo "Formatting /dev/$PARTITION as ext4..."
-  mkfs.ext4 "/dev/$PARTITION"
-else
-  echo "Partitioning is not automated by this script. Please partition manually and rerun."
-  exit 1
+read -rp "Is your system UEFI? (y/n): " IS_UEFI
+if [[ $IS_UEFI =~ ^[Yy] ]]; then
+    read -rp "Enter EFI partition device (e.g. /dev/sda1): " EFI_PART
 fi
 
-# 3. Mount partitions
-mount "/dev/$PARTITION" /mnt
+# Mount partitions
+echo "Mounting root partition $ROOT_PART to /mnt"
+mount "$ROOT_PART" /mnt
 
-# 4. EFI partition mounting (optional)
-if yesno "Do you have an EFI partition to mount?"; then
-  lsblk "/dev/$DRIVE"
-  while true; do
-    read -rp "Enter EFI partition (e.g. sda1): /dev/" EFIPART
-    if [[ -b "/dev/$EFIPART" ]]; then
-      mkdir -p /mnt/boot/efi
-      mount "/dev/$EFIPART" /mnt/boot/efi
-      echo "Mounted EFI partition /dev/$EFIPART to /mnt/boot/efi"
-      break
-    else
-      echo "Invalid EFI partition, try again."
-    fi
-  done
+if [[ $IS_UEFI =~ ^[Yy] ]]; then
+    echo "Mounting EFI partition $EFI_PART to /mnt/boot"
+    mkdir -p /mnt/boot
+    mount "$EFI_PART" /mnt/boot
 fi
 
-# 5. Install base system
-echo "Installing base packages (base, linux, linux-headers, linux-lts, linux-lts-headers, linux-firmware)..."
-pacstrap -i /mnt base linux linux-headers linux-lts linux-lts-headers linux-firmware --noconfirm
+# Install base system
+echo "Installing base system..."
+pacstrap /mnt base base-devel linux linux-headers linux-lts linux-lts-headers linux-firmware sudo nano networkmanager os-prober
 
-# 6. Generate fstab
+# Generate fstab
 genfstab -U /mnt >> /mnt/etc/fstab
 
-# 7. Chroot setup
-arch-chroot /mnt /bin/bash <<EOF
+# Setup chroot script
+cat > /mnt/root/setup.sh <<'EOF'
+#!/bin/bash
+set -euo pipefail
 
-echo "Setting root password"
-echo "root:root" | chpasswd  # Replace 'root' with desired password or prompt
+echo "=== Inside chroot setup ==="
 
-echo "Creating user"
-useradd -m -G wheel username  # Replace username or prompt
-echo "username:password" | chpasswd  # Replace password or prompt
+# Set root password
+echo "Set root password:"
+passwd
 
-echo "Allowing wheel group sudo access"
-sed -i 's/# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
+# Add user
+read -rp "Enter username for new user: " username
+useradd -m -G wheel "$username"
+echo "Set password for $username:"
+passwd "$username"
 
-echo "Installing necessary packages"
-pacman -Syu --noconfirm base-devel dosfstools grub efibootmgr mtools nano networkmanager openssh os-prober sudo
+# Enable wheel group for sudo
+sed -i '/^# %wheel ALL=(ALL) ALL/s/^# //' /etc/sudoers
 
-EOF
-
-# 8. Select desktop environment
-echo "Select desktop environment:"
-PS3="Choose your desktop manager: "
-options=("GNOME" "KDE Plasma" "None")
-select opt in "${options[@]}"; do
-  case $opt in
-    "GNOME")
-      DESKTOP="gnome gnome-tweaks"
-      ;;
-    "KDE Plasma")
-      DESKTOP="plasma kde-applications"
-      ;;
-    "None")
-      DESKTOP=""
-      ;;
-    *)
-      echo "Invalid option."
-      continue
-      ;;
-  esac
-  break
-done
-
-# 9. Install desktop environment inside chroot
-if [[ -n "$DESKTOP" ]]; then
-  arch-chroot /mnt pacman -Syu --noconfirm $DESKTOP
-fi
-
-# 10. GPU driver selection
-echo "Select GPU vendor for driver installation:"
-PS3="Choose GPU driver: "
-drivers=("Intel" "NVIDIA" "AMD" "None")
-select drv in "${drivers[@]}"; do
-  case $drv in
-    "Intel")
-      arch-chroot /mnt pacman -Syu --noconfirm mesa intel-media-driver
-      ;;
-    "NVIDIA")
-      arch-chroot /mnt pacman -Syu --noconfirm nvidia nvidia-utils nvidia-lts
-      ;;
-    "AMD")
-      arch-chroot /mnt pacman -Syu --noconfirm mesa libva-mesa-driver
-      ;;
-    "None")
-      echo "Skipping GPU driver installation."
-      ;;
-    *)
-      echo "Invalid option."
-      continue
-      ;;
-  esac
-  break
-done
-
-# 11. Kernel hooks
-arch-chroot /mnt mkinitcpio -p linux
-arch-chroot /mnt mkinitcpio -p linux-lts
-
-# 12. Locale selection
-echo "Locale selection"
-echo "Available locales example: en_US.UTF-8 UTF-8, en_GB.UTF-8 UTF-8, etc."
-read -rp "Enter locale (e.g. en_US.UTF-8): " USER_LOCALE
-
-arch-chroot /mnt /bin/bash <<EOF
-sed -i "s/^#${USER_LOCALE}/${USER_LOCALE}/" /etc/locale.gen
+# Locale setup
+echo "Available locales: en_US.UTF-8, en_GB.UTF-8, de_DE.UTF-8, etc."
+read -rp "Enter locale to enable (e.g. en_US.UTF-8): " locale
+sed -i "/^#$locale/s/^#//" /etc/locale.gen
 locale-gen
-echo "LANG=${USER_LOCALE}" > /etc/locale.conf
-EOF
+echo "LANG=$locale" > /etc/locale.conf
 
-# 13. Bootloader installation option
-if yesno "Do you want to install GRUB bootloader?"; then
-  arch-chroot /mnt /bin/bash <<EOF
-grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB
-grub-mkconfig -o /boot/grub/grub.cfg
-EOF
-else
-  echo "Skipping bootloader installation."
+# Timezone
+ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+hwclock --systohc
+
+# Hostname
+read -rp "Enter hostname: " hostname
+echo "$hostname" > /etc/hostname
+echo "127.0.0.1 localhost" >> /etc/hosts
+echo "::1       localhost" >> /etc/hosts
+echo "127.0.1.1 $hostname.localdomain $hostname" >> /etc/hosts
+
+# Install desktop environment
+echo "Select Desktop Environment:"
+echo "1) GNOME"
+echo "2) KDE Plasma"
+echo "3) None (server)"
+read -rp "Choose (1-3): " de_choice
+
+case $de_choice in
+    1)
+        pacman -S --noconfirm gnome gnome-tweaks gnome-extra
+        systemctl enable gdm
+        ;;
+    2)
+        pacman -S --noconfirm plasma plasma-wayland-session sddm
+        systemctl enable sddm
+        ;;
+    3)
+        echo "No DE selected"
+        ;;
+    *)
+        echo "Invalid choice, skipping DE"
+        ;;
+esac
+
+# Optionally install your preferred lock screen if mixing KDE + GNOME lock screen
+# (This is a bit tricky and usually not done, but you can install gnome-screensaver or other)
+
+# Graphics drivers
+echo "Select GPU type:"
+echo "1) Intel"
+echo "2) AMD"
+echo "3) Nvidia"
+read -rp "Choose (1-3): " gpu_choice
+
+case $gpu_choice in
+    1)
+        pacman -S --noconfirm mesa intel-media-driver
+        ;;
+    2)
+        pacman -S --noconfirm mesa libva-mesa-driver
+        ;;
+    3)
+        pacman -S --noconfirm nvidia nvidia-utils nvidia-lts
+        ;;
+    *)
+        echo "Unknown GPU choice, skipping GPU drivers"
+        ;;
+esac
+
+# Initramfs
+mkinitcpio -P
+
+# Bootloader install
+echo "Install and configure GRUB? (y/n)"
+read -r install_grub
+if [[ $install_grub =~ ^[Yy] ]]; then
+    pacman -S --noconfirm grub efibootmgr
+    if [[ -d /sys/firmware/efi ]]; then
+        grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
+    else
+        grub-install --target=i386-pc /dev/sda
+    fi
+    grub-mkconfig -o /boot/grub/grub.cfg
 fi
 
-# 14. Enable NetworkManager service
-arch-chroot /mnt systemctl enable NetworkManager
+echo "Enable NetworkManager"
+systemctl enable NetworkManager
 
-# 15. Finish installation
-echo "Installation done. You can now exit chroot and unmount partitions."
+echo "Setup complete inside chroot."
+EOF
 
-if yesno "Unmount partitions now?"; then
-  umount -R /mnt
-fi
+chmod +x /mnt/root/setup.sh
 
-if yesno "Reboot now?"; then
-  reboot
+echo "Chrooting into /mnt to finish installation..."
+arch-chroot /mnt /root/setup.sh
+
+echo "Cleaning up..."
+rm /mnt/root/setup.sh
+
+echo "Unmounting partitions..."
+umount -R /mnt
+
+echo "Installation finished."
+if confirm "Reboot now?"; then
+    reboot
 else
-  echo "You can reboot later."
+    echo "You can reboot later."
 fi
