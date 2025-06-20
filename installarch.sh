@@ -2,7 +2,7 @@
 
 set -e
 
-FILENAME="installarchexe"
+FILENAME="installarche"
 DOWNLOAD_URL="https://github.com/Yew12347/installarch/releases/download/alpha03/installarch"
 
 # Download the binary
