@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Arch Linux Install Script Generator</title>
+<style>
+  body { font-family: monospace; margin: 20px; max-width: 900px; }
+  label { display: block; margin-top: 10px; font-weight: bold; }
+  select, input[type=text], input[type=password] { width: 100%; font-family: monospace; font-size: 1em; padding: 5px; }
+  textarea { width: 100%; height: 350px; margin-top: 20px; font-family: monospace; font-size: 0.9em; }
+  button { margin-top: 15px; padding: 10px 20px; font-size: 1em; }
+</style>
+</head>
+<body>
+
+<h1>Arch Linux Install Script Generator</h1>
+
+<form id="installForm" onsubmit="generateScript(event)">
+  <label>Root Partition (e.g. /dev/sda2):</label>
+  <input type="text" id="rootPart" required placeholder="/dev/sda2" />
+
+  <label>Is this a UEFI system?</label>
+  <select id="uefi" required>
+    <option value="true">Yes</option>
+    <option value="false">No</option>
+  </select>
+
+  <label>EFI Partition (if UEFI, e.g. /dev/sda1):</label>
+  <input type="text" id="efiPart" placeholder="/dev/sda1" />
+
+  <label><input type="checkbox" id="formatRoot" /> Format root partition (mkfs.ext4)</label>
+  <label><input type="checkbox" id="formatEFI" /> Format EFI partition (mkfs.fat -F32)</label>
+
+  <label>Desktop Environment:</label>
+  <select id="desktopEnv" required>
+    <option value="none">None (minimal)</option>
+    <option value="gnome">GNOME</option>
+    <option value="kde">KDE Plasma</option>
+  </select>
+
+  <label>GPU Driver:</label>
+  <select id="gpuDriver" required>
+    <option value="intel">Intel</option>
+    <option value="amd">AMD</option>
+    <option value="nvidia">NVIDIA</option>
+  </select>
+
+  <label>Locale (e.g. en_US.UTF-8):</label>
+  <input type="text" id="locale" required value="en_US.UTF-8" />
+
+  <label>Hostname:</label>
+  <input type="text" id="hostname" required placeholder="archlinux" />
+
+  <label>Username:</label>
+  <input type="text" id="username" required placeholder="user" />
+
+  <label>Set passwords interactively inside chroot? (if unchecked, default password 'changeme' will be used)</label>
+  <select id="interactivePass" required>
+    <option value="true">Yes, ask for passwords</option>
+    <option value="false">No, use default password 'changeme'</option>
+  </select>
+
+  <label>Install GRUB bootloader?</label>
+  <select id="installGrub" required>
+    <option value="true">Yes</option>
+    <option value="false">No</option>
+  </select>
+
+  <button type="submit">Generate Install Script</button>
+</form>
+
+<h2>Generated Script:</h2>
+<textarea id="outputScript" readonly></textarea>
+
+<script>
+function generateScript(event) {
+  event.preventDefault();
+
+  const rootPart = document.getElementById('rootPart').value.trim();
+  const uefi = document.getElementById('uefi').value === 'true';
+  const efiPart = document.getElementById('efiPart').value.trim();
+  const formatRoot = document.getElementById('formatRoot').checked;
+  const formatEFI = document.getElementById('formatEFI').checked;
+  const desktopEnv = document.getElementById('desktopEnv').value;
+  const gpuDriver = document.getElementById('gpuDriver').value;
+  const locale = document.getElementById('locale').value.trim();
+  const hostname = document.getElementById('hostname').value.trim();
+  const username = document.getElementById('username').value.trim();
+  const interactivePass = document.getElementById('interactivePass').value === 'true';
+  const installGrub = document.getElementById('installGrub').value === 'true';
+
+  if (uefi && efiPart === '') {
+    alert('EFI partition must be specified for UEFI systems.');
+    return;
+  }
+
+  // Compose GPU driver packages
+  let gpuPkgs = '';
+  if (gpuDriver === 'intel') gpuPkgs = 'mesa intel-media-driver';
+  else if (gpuDriver === 'amd') gpuPkgs = 'mesa libva-mesa-driver';
+  else if (gpuDriver === 'nvidia') gpuPkgs = 'nvidia nvidia-utils nvidia-lts';
+
+  // Desktop environment packages and service enable
+  let dePkgs = '';
+  let deEnable = '';
+  if (desktopEnv === 'gnome') {
+    dePkgs = 'gnome gnome-tweaks gnome-extra';
+    deEnable = 'systemctl enable gdm';
+  } else if (desktopEnv === 'kde') {
+    dePkgs = 'plasma plasma-wayland-session sddm';
+    deEnable = 'systemctl enable sddm';
+  }
+
+  // Password commands
+  let passwdCmds = '';
+  if (interactivePass) {
+    passwdCmds = `
+echo "Set root password:"
+passwd
+
+echo "Set password for user '${username}':"
+passwd "${username}"
+    `;
+  } else {
+    passwdCmds = `
+echo "Setting default password 'changeme' for root and user '${username}'"
+echo "root:changeme" | chpasswd
+echo "${username}:changeme" | chpasswd
+    `;
+  }
+
+  // EFI mount script
+  let efiMount = '';
+  if (uefi) {
+    efiMount = `
+mkdir -p /mnt/boot
+mount ${efiPart} /mnt/boot
+    `;
+  }
+
+  // EFI format script
+  let efiFormat = '';
+  if (uefi && formatEFI) {
+    efiFormat = `mkfs.fat -F32 ${efiPart}`;
+  }
+
+  // GRUB install script
+  let grubScript = '';
+  if (installGrub) {
+    grubScript = `
+pacman -S --noconfirm grub efibootmgr
+if [[ -d /sys/firmware/efi ]]; then
+  grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
+else
+  grub-install --target=i386-pc /dev/sda
+fi
+grub-mkconfig -o /boot/grub/grub.cfg
+    `;
+  }
+
+  // Compose full script
+  const script = `#!/bin/bash
+set -euo pipefail
+
+echo "== Starting Arch Linux Installation =="
+
+# Format partitions
+${formatRoot ? `echo "Formatting root partition ${rootPart} as ext4"
+mkfs.ext4 ${rootPart}` : `echo "Skipping root partition format"`}
+
+${uefi ? (formatEFI ? `echo "Formatting EFI partition ${efiPart} as FAT32"
+${efiFormat}` : `echo "Skipping EFI partition format"`) : ''}
+
+# Mount partitions
+echo "Mounting root partition ${rootPart} to /mnt"
+mount ${rootPart} /mnt
+${efiMount}
+
+echo "Installing base system and packages"
+pacstrap /mnt base base-devel linux linux-headers linux-lts linux-lts-headers linux-firmware sudo networkmanager nano os-prober mtools dosfstools efibootmgr sudo openssh
+
+echo "Generating fstab"
+genfstab -U /mnt >> /mnt/etc/fstab
+
+# Prepare chroot setup script
+cat > /mnt/root/setup.sh <<'EOF'
+#!/bin/bash
+set -euo pipefail
+
+echo "== Inside chroot setup =="
+
+${passwdCmds}
+
+useradd -m -g users -G wheel ${username}
+
+echo "Enabling wheel group sudo privileges"
+sed -i '/^# %wheel ALL=(ALL) ALL/s/^# //' /etc/sudoers
+
+echo "Setting locale"
+sed -i 's/^#${locale}/${locale}/' /etc/locale.gen
+locale-gen
+echo "LANG=${locale}" > /etc/locale.conf
+
+echo "Setting timezone to UTC"
+ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+hwclock --systohc
+
+echo "Setting hostname to ${hostname}"
+echo "${hostname}" > /etc/hostname
+cat >> /etc/hosts <<HOSTS
+127.0.0.1 localhost
+::1       localhost
+127.0.1.1 ${hostname}.localdomain ${hostname}
+HOSTS
+
+echo "Installing additional packages"
+pacman -S --noconfirm base-devel dosfstools grub efibootmgr ${dePkgs} gnome-tweaks nano networkmanager os-prober ${gpuPkgs}
+
+${deEnable ? deEnable : 'echo "No desktop environment to enable"'}
+
+echo "Regenerating initramfs"
+mkinitcpio -p linux
+mkinitcpio -p linux-lts
+
+echo "Enable NetworkManager"
+systemctl enable NetworkManager
+
+echo "Installing bootloader"
+${grubScript}
+
+echo "Setup complete."
+EOF
+
+echo "Entering chroot to finish installation"
+arch-chroot /mnt /root/setup.sh
+
+echo "Cleaning up"
+rm /mnt/root/setup.sh
+
+echo "Unmounting partitions"
+umount -R /mnt
+
+read -rp "Installation complete. Reboot now? (y/n): " reboot_now
+if [[ \$reboot_now =~ ^[Yy] ]]; then
+  reboot
+else
+  echo "Please reboot manually later."
+fi
+`;
+
+  document.getElementById('outputScript').textContent = script;
+}
+</script>
+
+</body>
+</html>
