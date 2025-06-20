@@ -2,13 +2,16 @@
 
 set -e
 
+FILENAME="installarch"
+DOWNLOAD_URL="https://github.com/Yew12347/installarch/releases/download/alpha03/$FILENAME"
+
 # Download the binary
 echo "Downloading installarch..."
-curl -L -o https://github.com/Yew12347/installarch/releases/download/alpha03/installarch
+curl -L -o "$FILENAME" "$DOWNLOAD_URL"
 
 # Make it executable
 chmod +x "$FILENAME"
 
 # Run it
 echo "Running installarch..."
-./installarch
+./"$FILENAME"
